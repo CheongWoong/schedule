@@ -1,7 +1,6 @@
 import simulator
 from heapq import *
 
-
 def heapsort(iterable):
 	h = []
 	for v in iterable:
