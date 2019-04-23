@@ -327,7 +327,6 @@ class Simulator(object):
 				if p in self.packets:
 					self.packets.remove(p)
 #			'''
-
 			self.runQ, readyQ = self.machine.process(schedule, self.time, preemptive=self.scheduler.preempt)
 			for p in readyQ:
 				if p in self.packets:
