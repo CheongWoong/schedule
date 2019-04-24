@@ -16,7 +16,7 @@ from scheduler import *
 import argparse
 import json
 
-#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = torch.device("cpu")
 print('device:', device)
 
@@ -43,15 +43,15 @@ class ReplayMemory(object):
 class DQN(nn.Module):
 	def __init__(self, inputs, outputs):
 		super(DQN, self).__init__()
-		self.lin1 = nn.Linear(inputs, inputs*2)
-		self.lin2 = nn.Linear(inputs*2, inputs)
+#		self.lin1 = nn.Linear(inputs, inputs*2)
+#		self.lin2 = nn.Linear(inputs*2, inputs)
 		self.lin3 = nn.Linear(inputs, outputs)
 		
 		# Called with either one element to determine next action, or a batch
 		# during optimization. Returns tensor([[left0exp, right0exp]...]).
 	def forward(self, x):
-		x = F.relu(self.lin1(x))
-		x = F.relu(self.lin2(x))
+#		x = F.relu(self.lin1(x))
+#		x = F.relu(self.lin2(x))
 		x = F.relu(self.lin3(x))
 		
 		return x.view(x.size(0), -1)
@@ -63,8 +63,8 @@ EPS_END = 0.05
 EPS_DECAY = 200
 TARGET_UPDATE = 10
 
-policy_net = DQN(5, 1).to(device)
-target_net = DQN(5, 1).to(device)
+policy_net = DQN(6, 1).to(device)
+target_net = DQN(6, 1).to(device)
 target_net.load_state_dict(policy_net.state_dict())
 target_net.eval()
 
@@ -81,6 +81,9 @@ def select_action(state, num_actions, num_outputs):
 	eps_threshold = EPS_END + (EPS_START - EPS_END) * \
 					math.exp(-1. * steps_done / EPS_DECAY)
 	steps_done += 1
+	possible_actions = [i for i in range(num_actions)]
+	if len(possible_actions) == 0:
+		return torch.tensor([-1] * num_outputs, device=device, dtype=torch.long)
 	if sample > eps_threshold:
 		with torch.no_grad():
 			# t.max(1) will return largest column value of each row
@@ -94,9 +97,6 @@ def select_action(state, num_actions, num_outputs):
 				_y.append(ind)
 			return torch.tensor(_y, device=device, dtype=torch.long)
 	else:
-		possible_actions = [i for i in range(num_actions)]
-		if len(possible_actions) == 0:
-			return torch.tensor([-1] * num_outputs, device=device, dtype=torch.long)
 		return torch.tensor(random.sample(possible_actions, num_outputs), device=device, dtype=torch.long)
 
 def optimize_model():
@@ -151,9 +151,11 @@ class RS(object):
 		turnaround = result[1] / result[0]
 		priority = result[2] / result[0]
 		load = self.simulator.load / time
-
 		reward = cpu_util + throughput - turnaround - load 
-
+		reward = throughput*100-turnaround*200
+	
+		if time % 1000 == 0:
+			print('time:', time, 'reward:', round(reward, 2), 'cpu, thro, turn, load:', round(cpu_util, 2), round(throughput, 2), round(turnaround, 2), round(load, 2))
 		return reward
 
 	def run(self, time, packets, runQ):
@@ -164,18 +166,18 @@ class RS(object):
 				print("ERROR: None packet generated")
 				exit()
 			temp_p = self.prios(p)
-			state.append(temp_p[:-1])
+			state.append(list(temp_p)[:-1]+[0])
 			_p.append(temp_p[-1])
 		for p in runQ:
 			if p == None:
 				continue
 			temp_p = self.prios(p)
-			state.append(temp_p[:-1])
+			state.append(list(temp_p)[:-1]+[1])
 			_p.append(temp_p[-1])
 		num_p = len(_p)
 		for _ in range(10 - num_p):
 			_p.append(None)
-			state.append((-1, -1, -1, -1, -1))
+			state.append((-1, -1, -1, -1, -1, -1))
 #		print('time:', time)
 #		print('state:', state)
 #		print('_p:', _p)
@@ -196,7 +198,7 @@ class RS(object):
 				ind[i] = int(ind[i])
 			return _p[ind]
 
-		done = True if time == self.max_timestep else False
+		done = True if time+1 == self.max_timestep else False
 		result = self.machine.result()
 		reward = self.step(result, self.machine.ncores, time)
 		reward = torch.tensor([reward], device=device)
@@ -220,7 +222,7 @@ class RS(object):
 		for i in range(len(ind)):
 			ind[i] = int(ind[i])
 		if action[0] == -1:
-			return [None] * len(action)
+			return [None] * len(ind)
 		return _p[ind]
 
 
@@ -230,19 +232,23 @@ with open('config.json') as data_file:
 num_episodes = 50
 max_timestep = 10000
 
-gens = []
-for c in data["generators"]:
-	gen = Generator(c['rmean'], c['rstd'], c['tmean'], c['tstd'], c['pmean'], c['pstd'], c['delay'])
-	gens.append(gen)
-
 _m = data["machine"]
 machine = Machine(_m["resources"], _m["performance"], _m["ncore"])
 
 scheduler = RS(data["machine"]["ncore"], num_episodes, max_timestep, machine)
 
 for _ in range(num_episodes):
+	gens = []
+	for c in data["generators"]:
+		gen = Generator(c['rmean'], c['rstd'], c['tmean'], c['tstd'], c['pmean'], c['pstd'], c['delay'])
+		gens.append(gen)
+
+	_m = data["machine"]
+	machine = Machine(_m["resources"], _m["performance"], _m["ncore"])
+
 	simulator = Simulator(gens, scheduler, machine, max_timestep)
 	scheduler.simulator = simulator
+	scheduler.machine = machine
 	simulator.run()
 
 
