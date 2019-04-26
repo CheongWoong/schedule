@@ -90,7 +90,7 @@ def select_action(state, num_actions, num_outputs):
 			# second column on max result is index of where max element was
 			# found, so we pick action with the larger expected reward.
 			y = policy_net(state)
-			y[num_actions:] = -1
+			y[num_actions:] = -1000000
 			_ind = list(np.argsort(y, axis=0))[::-1][:num_outputs]
 			_y = []
 			for ind in _ind:
@@ -137,6 +137,7 @@ class RS(object):
 
 		self.prev_state = None
 		self.prev_action = None
+		self.score = None
 
 	def prios(self, p):
 		if p == None:
@@ -144,18 +145,23 @@ class RS(object):
 			exit()
 		return (p.dead, p.priority, p.release, p.time, p.required, p)
 
-	def step(self, result, ncores, time):
+	def compute_score(self, result, ncores, time):
 		cpu_util = result[3] / (ncores * time) * 100
-		throughput = result[0] / time
+		throughput = result[0] 
 		result[0] = 1 if result[0] == 0 else result[0]
 		turnaround = result[1] / result[0]
 		priority = result[2] / result[0]
 		load = self.simulator.load / time
-		reward = cpu_util + throughput - turnaround - load 
-		reward = throughput*100-turnaround*200
+		total = self.simulator.logger.getLen()
+		dead = total - result[0]
+		dead_rate = dead / total
+#		reward = cpu_util + throughput - turnaround - load 
+		reward = (throughput / 0.40 - turnaround / 0.30 - dead_rate / 0.60)/100
+		reward = throughput + priority
+#		reward = dead_rate*-100   
 	
-		if time % 1000 == 0:
-			print('time:', time, 'reward:', round(reward, 2), 'cpu, thro, turn, load:', round(cpu_util, 2), round(throughput, 2), round(turnaround, 2), round(load, 2))
+#		if (time+1) % 1000 == 0:
+#			print('time:', time, 'score:', round(reward, 2), 'cpu, thro, turn, load, dead_rate:', round(cpu_util, 2), round(throughput, 2), round(turnaround, 2), round(load, 2), round(dead_rate, 2))
 		return reward
 
 	def run(self, time, packets, runQ):
@@ -165,19 +171,23 @@ class RS(object):
 			if p == None:
 				print("ERROR: None packet generated")
 				exit()
-			temp_p = self.prios(p)
-			state.append(list(temp_p)[:-1]+[0])
+			temp_p = list(self.prios(p))
+			temp_p[0] -= time #normalizing
+			temp_p[2] -= time #normalizing
+			state.append(temp_p[:-1]+[0]) #[0] representing it was not in runQ.
 			_p.append(temp_p[-1])
 		for p in runQ:
 			if p == None:
 				continue
-			temp_p = self.prios(p)
-			state.append(list(temp_p)[:-1]+[1])
+			temp_p = list(self.prios(p))
+			temp_p[0] -= time #normalizing
+			temp_p[2] -= time #normalizing
+			state.append(temp_p[:-1]+[1]) #[1] representing that it was in runQ before.
 			_p.append(temp_p[-1])
 		num_p = len(_p)
 		for _ in range(10 - num_p):
-			_p.append(None)
-			state.append((-1, -1, -1, -1, -1, -1))
+			_p.append(None) #garbage packet
+			state.append((-1, -1, -1, -1, -1, -1)) #garbage features
 #		print('time:', time)
 #		print('state:', state)
 #		print('_p:', _p)
@@ -191,6 +201,7 @@ class RS(object):
 		self.prev_state = state
 		self.prev_action = action
 		
+
 		_p = np.array(_p)
 		if time == 0:
 			ind = action.tolist()
@@ -199,8 +210,15 @@ class RS(object):
 			return _p[ind]
 
 		done = True if time+1 == self.max_timestep else False
+
 		result = self.machine.result()
-		reward = self.step(result, self.machine.ncores, time)
+		prev_score = self.score
+		self.score = self.compute_score(result, self.machine.ncores, time)
+		if prev_score == None:
+			prev_score = self.score
+		reward = (self.score - prev_score) * 100
+#		if time % 1000 == 0:
+#			print(reward)
 		reward = torch.tensor([reward], device=device)
 
 		state = torch.tensor([state], device=device, dtype=torch.float32)
