@@ -46,32 +46,15 @@ class DQN(nn.Module):
 #		self.lin1 = nn.Linear(inputs, inputs*2)
 #		self.lin2 = nn.Linear(inputs*2, inputs)
 		self.lin3 = nn.Linear(inputs, outputs)
-		
+
 		# Called with either one element to determine next action, or a batch
 		# during optimization. Returns tensor([[left0exp, right0exp]...]).
 	def forward(self, x):
 #		x = F.relu(self.lin1(x))
 #		x = F.relu(self.lin2(x))
 		x = F.relu(self.lin3(x))
-		
+
 		return x.view(x.size(0), -1)
-
-BATCH_SIZE = 128
-GAMMA = 0.999
-EPS_START = 0.9
-EPS_END = 0.05
-EPS_DECAY = 200
-TARGET_UPDATE = 10
-
-policy_net = DQN(6, 1).to(device)
-target_net = DQN(6, 1).to(device)
-target_net.load_state_dict(policy_net.state_dict())
-target_net.eval()
-
-optimizer = optim.RMSprop(policy_net.parameters())
-memory = ReplayMemory(10000)
-
-steps_done = 0
 
 #num_actions 범위 내에서 아웃풋이 나오게 DQN 수정
 #num_outputs만큼 output을 return하게 수정
@@ -81,16 +64,14 @@ def select_action(state, num_actions, num_outputs):
 	eps_threshold = EPS_END + (EPS_START - EPS_END) * \
 					math.exp(-1. * steps_done / EPS_DECAY)
 	steps_done += 1
-	possible_actions = [i for i in range(num_actions)]
-	if len(possible_actions) == 0:
-		return torch.tensor([-1] * num_outputs, device=device, dtype=torch.long)
+	possible_actions = [i for i in range(num_actions)] + [-1] * (num_outputs - num_actions)
 	if sample > eps_threshold:
 		with torch.no_grad():
 			# t.max(1) will return largest column value of each row
 			# second column on max result is index of where max element was
 			# found, so we pick action with the larger expected reward.
 			y = policy_net(state)
-			y[num_actions:] = -1000000
+			y[num_actions:] = -1000000 #also see garbage features
 			_ind = list(np.argsort(y, axis=0))[::-1][:num_outputs]
 			_y = []
 			for ind in _ind:
@@ -110,8 +91,8 @@ def optimize_model():
 	state_batch = torch.cat(batch.state)
 	action_batch = torch.cat(batch.action)
 	reward_batch = torch.cat(batch.reward)
-	action_batch = action_batch.view(-1, 1)
 	action_batch[action_batch==-1] = 0
+	action_batch = action_batch.view(-1, _m["ncore"])
 	state_action_values = policy_net(state_batch).gather(1, action_batch)
 
 	next_state_values = torch.zeros(BATCH_SIZE, device=device)
@@ -147,19 +128,18 @@ class RS(object):
 
 	def compute_score(self, result, ncores, time):
 		cpu_util = result[3] / (ncores * time) * 100
-		throughput = result[0] 
+		throughput = result[0] #/ time
 		result[0] = 1 if result[0] == 0 else result[0]
-		turnaround = result[1] / result[0]
-		priority = result[2] / result[0]
-		load = self.simulator.load / time
+		turnaround = result[1] #/ result[0]
+		priority = result[2] #/ result[0]
+		load = self.simulator.load #/ time
 		total = self.simulator.logger.getLen()
 		dead = total - result[0]
 		dead_rate = dead / total
-#		reward = cpu_util + throughput - turnaround - load 
-		reward = (throughput / 0.40 - turnaround / 0.30 - dead_rate / 0.60)/100
-		reward = throughput + priority
-#		reward = dead_rate*-100   
-	
+#		reward = cpu_util + throughput - turnaround - load
+		reward = [throughput, priority/10, load/10, turnaround/10, (throughput)*1.0 + (priority/10)*1.0 - (load/10)*1.0 - (turnaround/10)*1.0]
+#		reward = dead_rate*-100
+
 #		if (time+1) % 1000 == 0:
 #			print('time:', time, 'score:', round(reward, 2), 'cpu, thro, turn, load, dead_rate:', round(cpu_util, 2), round(throughput, 2), round(turnaround, 2), round(load, 2), round(dead_rate, 2))
 		return reward
@@ -171,23 +151,30 @@ class RS(object):
 			if p == None:
 				print("ERROR: None packet generated")
 				exit()
-			temp_p = list(self.prios(p))
-			temp_p[0] -= time #normalizing
-			temp_p[2] -= time #normalizing
-			state.append(temp_p[:-1]+[0]) #[0] representing it was not in runQ.
+			#-, +, +, -, -, +
+			temp_p = list(self.prios(p)) #deadline, priority, released_time, needed_time, required # of resources, the packet
+			temp_p[0] = temp_p[0] - time #normalizing to remaining time
+			#temp_p[1] = 0
+			temp_p[2] = time - temp_p[2] #normalizing to time gone after released
+			#temp_p[3] -= temp_p[0]
+			#temp_p[4] = 0)
+			state.append(temp_p[:-1]+[-1]) #[-1] representing it was not in runQ.
 			_p.append(temp_p[-1])
 		for p in runQ:
 			if p == None:
 				continue
 			temp_p = list(self.prios(p))
 			temp_p[0] -= time #normalizing
-			temp_p[2] -= time #normalizing
+			#temp_p[1] = 0
+			temp_p[2] = time - temp_p[2] #normalizing
+			#temp_p[3] -= temp_p[0]
+			#temp_p[4] = 0
 			state.append(temp_p[:-1]+[1]) #[1] representing that it was in runQ before.
 			_p.append(temp_p[-1])
 		num_p = len(_p)
 		for _ in range(10 - num_p):
 			_p.append(None) #garbage packet
-			state.append((-1, -1, -1, -1, -1, -1)) #garbage features
+			state.append((0, 0, 0, 0, 0, 0)) #garbage features
 #		print('time:', time)
 #		print('state:', state)
 #		print('_p:', _p)
@@ -200,7 +187,7 @@ class RS(object):
 
 		self.prev_state = state
 		self.prev_action = action
-		
+
 
 		_p = np.array(_p)
 		if time == 0:
@@ -216,14 +203,16 @@ class RS(object):
 		self.score = self.compute_score(result, self.machine.ncores, time)
 		if prev_score == None:
 			prev_score = self.score
-		reward = (self.score - prev_score) * 100
+
+		reward = (self.score[-1] - prev_score[-1])
+
 #		if time % 1000 == 0:
 #			print(reward)
-		reward = torch.tensor([reward], device=device)
+		reward = torch.tensor([reward], device=device, dtype=torch.float32)
 
 		state = torch.tensor([state], device=device, dtype=torch.float32)
 		memory.push(prev_state, prev_action, state, reward)
-		
+
 		optimize_model()
 
 		if done:
@@ -232,10 +221,12 @@ class RS(object):
 				print('target updated')
 			self.i_episode += 1
 			print(self.i_episode, 'episodes done')
-		
-		if self.i_episode == self.num_episodes: 
+			w = policy_net.lin3.weight.data
+			print(w)
+
+		if self.i_episode == self.num_episodes:
 			print('Complete')
-		
+
 		ind = action.tolist()
 		for i in range(len(ind)):
 			ind[i] = int(ind[i])
@@ -246,6 +237,25 @@ class RS(object):
 
 with open('config.json') as data_file:
 	data = json.loads(data_file.read())
+
+BATCH_SIZE = 128
+GAMMA = 0.999
+EPS_START = 0.9
+EPS_END = 0.05
+EPS_DECAY = 200
+TARGET_UPDATE = 10
+
+num_features = 6
+
+policy_net = DQN(num_features, 1).to(device)
+target_net = DQN(num_features, 1).to(device)
+target_net.load_state_dict(policy_net.state_dict())
+target_net.eval()
+
+optimizer = optim.RMSprop(policy_net.parameters())
+memory = ReplayMemory(10000)
+
+steps_done = 0
 
 num_episodes = 50
 max_timestep = 10000
@@ -268,5 +278,3 @@ for _ in range(num_episodes):
 	scheduler.simulator = simulator
 	scheduler.machine = machine
 	simulator.run()
-
-
